@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>terminal.lc replica (functional)</title>
+
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: #071b12;
+    overflow: hidden;
+  }
+
+  #tlc-root { height: 100vh; width: 100vw; }
+  #tlc-root * { box-sizing: border-box; }
+
+  .tlc-frame{
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    overflow: hidden;
+    background: #071b12;
+    box-shadow: none;
+    outline: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+  }
+
+  /* CRT layers */
+  .tlc-phosphor{
+    position:absolute; inset:0;
+    background:
+      radial-gradient(1200px 900px at 50% 30%, rgba(32,255,150,.12), rgba(0,0,0,0) 55%),
+      linear-gradient(180deg, rgba(0,0,0,.28), rgba(0,0,0,.55));
+  }
+  .tlc-scanlines{
+    position:absolute; inset:0; pointer-events:none; opacity:.30; mix-blend-mode:multiply;
+    background: repeating-linear-gradient(180deg,
+      rgba(0,0,0,0) 0px,
+      rgba(0,0,0,0) 2px,
+      rgba(0,0,0,.38) 3px
+    );
+  }
+  .tlc-noise{
+    position:absolute; inset:0; pointer-events:none; opacity:.13; mix-blend-mode:overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='0.5'/></svg>");
+    background-size: 220px 220px;
+  }
+  .tlc-vignette{
+    position:absolute; inset:0; pointer-events:none;
+    box-shadow: inset 0 0 90px rgba(0,0,0,.85);
+    transform: scale(1.01);
+  }
+
+  /* Content */
+  .tlc-inner{
+    position: relative;
+    height: 100%;
+    padding: 20px 24px 46px 24px;
+  }
+
+  .tlc-scroll{
+    height: 100%;
+    overflow: auto;
+    padding-right: 8px;
+    color: rgba(170,255,210,.92);
+    text-shadow: 0 0 10px rgba(60,255,170,.15);
+    font-size: 14px;
+    line-height: 1.45rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .tlc-line.in { color: rgba(190,255,225,.95); }
+
+  .tlc-prompt{
+    margin-top: 8px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .tlc-gt{
+    user-select:none;
+    color: rgba(190,255,225,.95);
+    text-shadow: 0 0 10px rgba(60,255,170,.18);
+  }
+  .tlc-inputwrap{ position: relative; flex: 1; }
+  .tlc-render{ min-height: 1.45rem; padding-right: 24px; }
+  .tlc-caret{
+    display:inline-block;
+    width: 9px; height: 16px;
+    margin-left: 2px;
+    transform: translateY(2px);
+    background: rgba(190,255,225,.92);
+    box-shadow: 0 0 8px rgba(60,255,170,.25);
+  }
+  .tlc-caret.off{ background: rgba(190,255,225,0); box-shadow:none; }
+  .tlc-input{
+    position:absolute; inset:0;
+    opacity: 0;
+    caret-color: transparent;
+    border:0; outline:0;
+  }
+
+  .tlc-status{
+    position:absolute;
+    left: 16px;
+    bottom: 12px;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    opacity: .70;
+    color: rgba(170,255,210,.85);
+    user-select:none;
+  }
+
+  .tlc-file{ display:none; }
+
+  /* Scrollbars */
+  .tlc-scroll::-webkit-scrollbar { width: 10px; }
+  .tlc-scroll::-webkit-scrollbar-thumb { background: rgba(170,255,210,.16); border-radius: 10px; }
+  .tlc-scroll::-webkit-scrollbar-track { background: rgba(0,0,0,.15); }
+</style>
+</head>
+
+<body>
+<div id="tlc-root">
+  <div class="tlc-frame" tabindex="0" aria-label="terminal">
+    <div class="tlc-phosphor"></div>
+    <div class="tlc-scanlines"></div>
+    <div class="tlc-noise"></div>
+    <div class="tlc-vignette"></div>
+
+    <div class="tlc-inner">
+      <div id="tlc-scroll" class="tlc-scroll" aria-label="output"></div>
+
+      <form id="tlc-form" class="tlc-prompt" autocomplete="off">
+        <div class="tlc-gt">&gt;</div>
+        <div class="tlc-inputwrap">
+          <div class="tlc-render" aria-hidden="true">
+            <span id="tlc-render-text"></span><span id="tlc-caret" class="tlc-caret"></span>
+          </div>
+          <input id="tlc-input" class="tlc-input" spellcheck="false" autocapitalize="off" autocomplete="off" />
+        </div>
+      </form>
+
+      <div id="tlc-status" class="tlc-status">ready</div>
+    </div>
+
+    <input id="tlc-file" type="file" class="tlc-file" />
+  </div>
+</div>
+
+<script>
+(() => {
+  const scroll = document.getElementById("tlc-scroll");
+  const frame  = document.querySelector(".tlc-frame");
+  const form   = document.getElementById("tlc-form");
+  const input  = document.getElementById("tlc-input");
+  const renderText = document.getElementById("tlc-render-text");
+  const caret  = document.getElementById("tlc-caret");
+  const status = document.getElementById("tlc-status");
+  const filePick = document.getElementById("tlc-file");
+
+  // ---- utilities ----
+  const pad = (n) => String(n).padStart(2, "0");
+  const nowStamp = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+  const makeId = () => {
+    const a = "abcdefghijklmnopqrstuvwxyz0123456789";
+    let s = "";
+    for (let i = 0; i < 8; i++) s += a[Math.floor(Math.random() * a.length)];
+    return s;
+  };
+
+  const addLine = (text, cls) => {
+    const div = document.createElement("div");
+    div.className = "tlc-line" + (cls ? " " + cls : "");
+    div.textContent = text;
+    scroll.appendChild(div);
+  };
+
+  const addBlock = (text, cls) => {
+    String(text).split("\n").forEach(line => addLine(line, cls));
+  };
+
+  const scrollBottom = () => {
+    scroll.scrollTo({ top: scroll.scrollHeight, behavior: "smooth" });
+  };
+
+  const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // ---- command help/banner ----
+  const helpText =
+`commands:
+  help                show this help
+  clear               clear screen
+  about               what is this
+  pri                 print intro banner
+  upload              select a file to cache (demo: local blob)
+  ls                  list cached files
+  get <id>            open cached file
+  rm <id>             remove cached file`;
+
+  const banner =
+`TERMINAL.LC  -  ANONYMOUS FILE CACHING
+
+this is a frontend replica of the terminal UI.
+demo note: uploads are stored as blob URLs (won't survive refresh on many browsers/hosts).
+
+type 'help' for commands`;
+
+  // ---- state ----
+  let busy = false;
+
+  // command history
+  const history = [];
+  let histIdx = -1;
+
+  // file store (metadata + blobUrl)
+  let store = {};
+  try { store = JSON.parse(localStorage.getItem("tlc_store_v1") || "{}"); } catch { store = {}; }
+  const saveStore = () => {
+    try { localStorage.setItem("tlc_store_v1", JSON.stringify(store)); } catch {}
+  };
+
+  // ---- caret blink ----
+  let caretOn = true;
+  const updateCaret = () => {
+    const focused = (document.activeElement === input);
+    caret.classList.toggle("off", !caretOn || !focused || busy);
+  };
+  setInterval(() => { caretOn = !caretOn; updateCaret(); }, 520);
+
+  // ---- busy ----
+  const setBusy = (v) => {
+    busy = v;
+    status.textContent = v ? "processing…" : "ready";
+    input.disabled = v;
+    updateCaret();
+  };
+
+  // ---- render hidden input to visible line ----
+  const render = () => { renderText.textContent = input.value; };
+
+  // ---- command runner ----
+  async function runCommand(cmdRaw) {
+    let cmd = (cmdRaw || "").trim();
+    if (!cmd) return;
+
+    // echo input
+    addLine("> " + cmd, "in");
+    scrollBottom();
+
+    setBusy(true);
+    await delay(90);
+
+    const parts = cmd.split(/\s+/);
+    const head = (parts.shift() || "").toLowerCase();
+    const arg = parts.join(" ").trim();
+
+    if (head === "help") {
+      addBlock(helpText);
+    } else if (head === "clear") {
+      scroll.innerHTML = "";
+    } else if (head === "about") {
+      addBlock(
+`terminal.lc replica
+
+- crt green phosphor styling
+- prompt + block cursor
+- command history (up/down)
+- demo file caching: upload/ls/get/rm
+
+note: blob URLs often won't survive a refresh.`
+      );
+    } else if (head === "pri") {
+      addBlock(banner);
+    } else if (head === "upload") {
+      addLine("select a file…");
+      filePick.click();
+    } else if (head === "ls") {
+      const items = Object.values(store).sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+      if (!items.length) {
+        addLine("no cached files");
+      } else {
+        addLine("id        size      type                 name");
+        items.forEach(s => {
+          const size = String(s.size || 0).padStart(8, " ");
+          const id = String(s.id || "").padEnd(10, " ");
+          const type = String(s.mime || "application/octet-stream").slice(0, 20).padEnd(20, " ");
+          addLine(`${id}${size}  ${type}  ${s.name || ""}`);
+        });
+      }
+    } else if (head === "get") {
+      if (!arg) {
+        addLine("usage: get <id>");
+      } else if (!store[arg]) {
+        addLine("not found: " + arg);
+      } else if (!store[arg].blobUrl) {
+        addLine("cannot open after refresh (blob url missing). re-upload file.");
+      } else {
+        const s = store[arg];
+        addLine(`opening ${arg} (${s.name})`);
+        window.open(s.blobUrl, "_blank", "noopener,noreferrer");
+      }
+    } else if (head === "rm") {
+      if (!arg) {
+        addLine("usage: rm <id>");
+      } else if (!store[arg]) {
+        addLine("not found: " + arg);
+      } else {
+        try { URL.revokeObjectURL(store[arg].blobUrl); } catch {}
+        delete store[arg];
+        saveStore();
+        addLine("removed " + arg);
+      }
+    } else {
+      addLine("unknown command: " + head);
+      addLine("type 'help' for commands");
+    }
+
+    setBusy(false);
+    scrollBottom();
+  }
+
+  // ---- events ----
+  input.addEventListener("input", render);
+  input.addEventListener("focus", updateCaret);
+  input.addEventListener("blur", updateCaret);
+
+  // click anywhere to focus input
+  frame.addEventListener("mousedown", () => input.focus());
+
+  // keyboard: history
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!history.length) return;
+      if (histIdx === -1) histIdx = history.length - 1;
+      else histIdx = Math.max(0, histIdx - 1);
+      input.value = history[histIdx];
+      render();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!history.length) return;
+      if (histIdx === -1) return;
+      histIdx = Math.min(history.length, histIdx + 1);
+      if (histIdx >= history.length) {
+        histIdx = -1;
+        input.value = "";
+      } else {
+        input.value = history[histIdx];
+      }
+      render();
+    } else if (e.key === "Escape") {
+      input.value = "";
+      histIdx = -1;
+      render();
+    }
+  });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const cmd = input.value;
+    input.value = "";
+    render();
+    histIdx = -1;
+    if (cmd.trim()) history.push(cmd.trim());
+    await runCommand(cmd);
+  });
+
+  filePick.addEventListener("change", () => {
+    const f = filePick.files && filePick.files[0];
+    filePick.value = "";
+    if (!f) return;
+
+    const id = makeId();
+    const blobUrl = URL.createObjectURL(f);
+
+    store[id] = {
+      id,
+      name: f.name || "unnamed",
+      size: f.size || 0,
+      mime: f.type || "application/octet-stream",
+      createdAt: nowStamp(),
+      blobUrl
+    };
+    saveStore();
+
+    addLine("cached: " + id);
+    addLine("name: " + store[id].name);
+    addLine("size: " + store[id].size + " bytes");
+    addLine("type: " + store[id].mime);
+    addLine("use: get " + id);
+    scrollBottom();
+  });
+
+  // ---- init ----
+  addLine("TERMINAL.LC  -  ANONYMOUS FILE CACHING");
+  addLine("");
+  addLine("type 'help' for commands");
+  addLine("");
+  input.value = "pri";
+  render();
+  input.focus();
+  updateCaret();
+})();
+</script>
+</body>
+</html>
